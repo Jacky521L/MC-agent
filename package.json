@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "dev:viewer": "tsx src/dev_viewer.ts"
+  },
   "dependencies": {
     "mineflayer": "^4.37.0",
     "prismarine-viewer": "^1.33.0"
