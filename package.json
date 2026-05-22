@@ -1,9 +1,13 @@
 {
   "scripts": {
+    "test": "tsx src/actions/tree.test.ts",
     "dev:viewer": "tsx src/dev_viewer.ts"
   },
   "dependencies": {
+    "canvas": "^3.2.3",
+    "denque": "^2.1.0",
     "mineflayer": "^4.37.0",
+    "mineflayer-pathfinder": "^2.4.5",
     "prismarine-viewer": "^1.33.0"
   },
   "devDependencies": {
