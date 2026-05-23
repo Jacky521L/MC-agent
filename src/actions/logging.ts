@@ -152,7 +152,36 @@ const digReachableLog = async (pos: Vec3) => {
     }
 };
 
+const clearBlocks = async (blocks: Vec3[]) => {
+    for (const blockPos of blocks) {
+        const block = bot.blockAt(blockPos);
+        if (block && block.name !== "air") {
+            try {
+                await bot.dig(block, false, 'raycast');
+                console.log(`Cleared block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}.`);
+            } catch (error) {
+                console.log(`Failed to clear block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}:`, error);
+            }
+        }
+    }
+};
+
+
 export const chopTree = async (treeBlock?: Vec3) => {
+    let numPlacedBlocks = 0;
+    let botPlacedBlocks: Vec3[] = [];
+
+    bot.on('blockUpdate', (oldBlock, newBlock) => {
+        if (oldBlock.name === "air" && newBlock.name !== "air") {
+
+            const dist = bot.entity.position.distanceTo(newBlock.position);
+            if (dist < 5) {
+                numPlacedBlocks++;
+                botPlacedBlocks.unshift(newBlock.position);
+                console.log(`bot placed ${numPlacedBlocks} block.`);
+            }
+        }
+    });
     const startBlock = treeBlock ?? findNearestTree(false);
     if (!startBlock) {
         console.log("No tree found to chop.");
@@ -179,5 +208,8 @@ export const chopTree = async (treeBlock?: Vec3) => {
     }
 
     console.log(`Finished chopping tree. Chopped ${choppedCount}/${logsToChop.length} blocks.`);
+
+    await clearBlocks(botPlacedBlocks);
+    console.log(`Cleared ${botPlacedBlocks.length} blocks placed by the bot during chopping.`);
     return choppedCount;
 };
