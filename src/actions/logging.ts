@@ -204,7 +204,9 @@ const digBlock = async (block: any) => {
     await bot.dig(block, true, 'auto');
 };
 
-const digReachableLog = async (pos: Vec3) => {
+const digReachableLog = async (pos: Vec3, shouldContinue = () => true) => {
+    if (!shouldContinue()) return false;
+
     let block = bot.blockAt(pos);
     if (!isTreeLogBlock(block)) return false;
 
@@ -212,18 +214,27 @@ const digReachableLog = async (pos: Vec3) => {
 
     if (!isWithinDigReach(bot.entity.position, pos) || !bot.canDigBlock(block)) {
         await moveToReachBlock(pos);
+        if (!shouldContinue()) return false;
+
         block = bot.blockAt(pos);
         if (!isTreeLogBlock(block)) return false;
     }
 
     try {
+        if (!shouldContinue()) return false;
         await digBlock(block);
         return true;
     } catch (error) {
+        if (!shouldContinue()) return false;
+
         await moveToReachBlock(pos);
+        if (!shouldContinue()) return false;
+
         console.log(`Retrying dig after moving: ${pos.x}, ${pos.y}, ${pos.z}`);
         block = bot.blockAt(pos);
         if (!isTreeLogBlock(block)) return false;
+
+        if (!shouldContinue()) return false;
         await digBlock(block);
         return true;
     }
@@ -296,10 +307,12 @@ export class ChopTreeTask implements Task {
     }
 
     async cancel() {
+        const runningPromise = this.runningPromise;
         this.state.phase = "cancelled";
         this.state.previousPhase = null;
         this.stopCurrentBotAction();
         console.log("Chop tree task cancelled.");
+        await runningPromise?.catch(() => undefined);
     }
 
     getState(): ChopTreeStateSnapshot {
@@ -393,7 +406,7 @@ export class ChopTreeTask implements Task {
         const logPos = this.state.logsToChop[this.state.nextLogIndex];
         let shouldAdvanceLogIndex = false;
         try {
-            const didChop = await digReachableLog(logPos);
+            const didChop = await digReachableLog(logPos, () => this.shouldKeepRunning());
             if (this.state.phase === "paused" || this.state.phase === "cancelled") return;
 
             shouldAdvanceLogIndex = true;

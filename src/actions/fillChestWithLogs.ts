@@ -162,11 +162,13 @@ export class FillChestWithLogsTask implements Task {
     }
 
     async cancel() {
+        const runningPromise = this.runningPromise;
         this.state.phase = "cancelled";
         this.state.previousPhase = null;
         await this.currentChopTask?.cancel();
         this.stopCurrentBotAction();
         console.log("Fill chest with logs task cancelled.");
+        await runningPromise?.catch(() => undefined);
     }
 
     getState() {

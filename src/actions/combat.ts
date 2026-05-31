@@ -2,11 +2,13 @@ import bot from "../bot";
 import { Entity } from "prismarine-entity";
 import { Vec3 } from "vec3";
 import { plugin as pvp } from "mineflayer-pvp";
-import { pathfinder } from "mineflayer-pathfinder";
+import { goals, pathfinder } from "mineflayer-pathfinder";
 import { Task, TaskController } from "./taskController";
 
 const THREAT_RANGE = 16;
 const COMBAT_PRIORITY = 200;
+const COMBAT_RECOVERY_INTERVAL_MS = 750;
+const COMBAT_DELAYED_RECOVERY_MS = [150, 500, 1000, 2000];
 const HOSTILE_MOBS = new Set([
     "blaze",
     "cave_spider",
@@ -73,11 +75,16 @@ export class CombatTask implements Task {
     readonly name = "combat";
     readonly priority = COMBAT_PRIORITY;
 
+    private isCancelled = false;
+    private recoveryTimer: ReturnType<typeof setInterval> | null = null;
+    private delayedRecoveryTimers: ReturnType<typeof setTimeout>[] = [];
+
     constructor(private readonly target: Entity) {}
 
     async start() {
         ensurePvp();
         console.log(`Starting combat with ${this.target.name ?? this.target.displayName ?? "mob"}.`);
+        this.isCancelled = false;
 
         await new Promise<void>((resolve) => {
             const onStoppedAttacking = () => {
@@ -91,14 +98,39 @@ export class CombatTask implements Task {
                 resolve();
             };
 
+            const onBotHurt = (entity: Entity) => {
+                if (entity !== bot.entity) return;
+                this.recoverCombatPath("hurt");
+                this.scheduleDelayedRecovery("hurt");
+            };
+
+            const onForcedMove = () => {
+                this.recoverCombatPath("forced move");
+                this.scheduleDelayedRecovery("forced move");
+            };
+
+            const onPathStop = () => {
+                this.recoverCombatPath("path stop");
+                this.scheduleDelayedRecovery("path stop");
+            };
+
             const cleanup = () => {
+                this.stopRecoveryTimer();
+                this.clearDelayedRecovery();
                 bot.off("stoppedAttacking", onStoppedAttacking);
                 bot.off("entityGone", onEntityGone);
+                bot.off("entityHurt", onBotHurt);
+                bot.off("forcedMove", onForcedMove);
+                bot.off("path_stop", onPathStop);
             };
 
             bot.once("stoppedAttacking", onStoppedAttacking);
             bot.on("entityGone", onEntityGone);
+            bot.on("entityHurt", onBotHurt);
+            bot.on("forcedMove", onForcedMove);
+            bot.on("path_stop", onPathStop);
             bot.pvp.attack(this.target);
+            this.startRecoveryTimer();
         });
     }
 
@@ -110,6 +142,9 @@ export class CombatTask implements Task {
     }
 
     async cancel() {
+        this.isCancelled = true;
+        this.stopRecoveryTimer();
+        this.clearDelayedRecovery();
         if (bot.pvp) {
             await bot.pvp.stop();
         }
@@ -121,6 +156,53 @@ export class CombatTask implements Task {
             target: this.target.name ?? this.target.displayName ?? null,
             targetId: this.target.id,
         };
+    }
+
+    private startRecoveryTimer() {
+        this.stopRecoveryTimer();
+        this.recoveryTimer = setInterval(() => {
+            this.recoverCombatPath("watchdog");
+        }, COMBAT_RECOVERY_INTERVAL_MS);
+    }
+
+    private stopRecoveryTimer() {
+        if (!this.recoveryTimer) return;
+
+        clearInterval(this.recoveryTimer);
+        this.recoveryTimer = null;
+    }
+
+    private scheduleDelayedRecovery(reason: string) {
+        for (const delay of COMBAT_DELAYED_RECOVERY_MS) {
+            const timer = setTimeout(() => {
+                this.recoverCombatPath(`${reason} delayed ${delay}ms`);
+            }, delay);
+            this.delayedRecoveryTimers.push(timer);
+        }
+    }
+
+    private clearDelayedRecovery() {
+        for (const timer of this.delayedRecoveryTimers) {
+            clearTimeout(timer);
+        }
+        this.delayedRecoveryTimers = [];
+    }
+
+    private recoverCombatPath(reason: string) {
+        if (this.isCancelled) return;
+        if (!bot.pvp?.target) return;
+        if (bot.pvp.target !== this.target) return;
+        if (bot.entities[this.target.id] !== this.target) return;
+
+        ensurePvp();
+        if (bot.pvp.movements) {
+            bot.pathfinder.setMovements(bot.pvp.movements);
+        }
+
+        bot.pathfinder.setGoal(new goals.GoalFollow(this.target, bot.pvp.followRange ?? 2), true);
+        if (reason !== "watchdog") {
+            console.log(`Recovered combat path after ${reason}.`);
+        }
     }
 }
 

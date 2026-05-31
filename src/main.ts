@@ -1,6 +1,6 @@
 import bot from "./bot";
 import { findNearestTree, getAllTreeBlocks } from "./actions/logging";
-import { followPlayer, stopFollowing } from "./follow_player";
+import { FollowPlayerTask } from "./follow_player";
 import { loader as autoEat } from 'mineflayer-auto-eat'
 import { TaskController } from "./actions/taskController";
 import { EatTask } from "./actions/survive";
@@ -67,18 +67,15 @@ const main = () => {
     bot.on('chat', async (username, message) => {
         if (username === "Bot") return;
 
-        if (message === "follow") {
+        if (message === "follow me") {
             const targetPlayer = bot.players[username];
-            if (targetPlayer) {
-                await followPlayer(targetPlayer);
-            } else {
+            if (!targetPlayer?.entity) {
                 console.log(`Player ${username} not found.`);
+                return;
             }
-        };
-        if (message === "stop following") {
-            await stopFollowing();
-        }
-        if (message === "find tree") {
+
+            await taskController.replace(new FollowPlayerTask(targetPlayer));
+        } else if (message === "find tree") {
             const tree = findNearestTree();
             if (tree) {
                 getAllTreeBlocks(tree);
@@ -96,7 +93,7 @@ const main = () => {
                 return;
             }
 
-            taskController.run(fillChestTask);
+            await taskController.replace(fillChestTask);
         }
     });
 }

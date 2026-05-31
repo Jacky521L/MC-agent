@@ -45,6 +45,31 @@ export class TaskController {
         this.addTask(task);
     }
 
+    async replace(task: Task) {
+        await this.cancelAll();
+        this.startTask(task);
+    }
+
+    async cancelAll() {
+        const tasksToCancel = [
+            this.currentTask,
+            ...this.pausedTasks,
+            ...this.taskQueue,
+        ].filter((task): task is Task => Boolean(task));
+
+        this.currentTask = null;
+        this.pausedTasks = [];
+        this.taskQueue = [];
+
+        await Promise.all(tasksToCancel.map(async (task) => {
+            try {
+                await task.cancel();
+            } catch (error) {
+                console.log(`Task ${task.name} failed during cancel:`, error);
+            }
+        }));
+    }
+
     private async startTask(task: Task) {
         this.currentTask = task;
 

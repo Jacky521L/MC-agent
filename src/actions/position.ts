@@ -20,11 +20,9 @@ export const shouldRepairInvalidPosition = (
     lastValidBotPosition: Vec3 | null,
     isBotAlive: boolean,
     isInRepairCooldown: boolean,
-    isOnStableGround = true,
 ) => {
     return !isInRepairCooldown
         && isBotAlive
-        && isOnStableGround
         && !isValidPosition(currentPosition)
         && isValidPosition(lastValidBotPosition);
 };
@@ -62,9 +60,10 @@ export const setupPositionRepair = () => {
     bot.on("respawn", () => resetRepairState("respawn"));
     bot.on("spawn", () => resetRepairState("spawn"));
     bot.on("forcedMove", () => pauseRepair("forced move", FALL_OR_HURT_REPAIR_COOLDOWN_MS));
-    bot.on("entityHurt", (entity) => {
-        if (entity === bot.entity) {
-            pauseRepair("hurt", FALL_OR_HURT_REPAIR_COOLDOWN_MS);
+    bot.on("entityHurt", (entity, source) => {
+        const wasHurtByMob = source?.type === "mob";
+        if (entity === bot.entity && !wasHurtByMob && !isSafeToRepairNow()) {
+            pauseRepair("airborne hurt", FALL_OR_HURT_REPAIR_COOLDOWN_MS);
         }
     });
 
@@ -82,7 +81,6 @@ export const setupPositionRepair = () => {
             lastStableGroundPosition,
             bot.isAlive !== false && bot.health > 0,
             isInRepairCooldown,
-            isSafeToRepairNow(),
         )) {
             console.log("Restoring bot position after invalid coordinates:", currentPosition);
             bot.entity.position = lastStableGroundPosition.clone();
