@@ -5,6 +5,7 @@ import { loader as autoEat } from 'mineflayer-auto-eat'
 import { TaskController } from "./actions/taskController";
 import { EatTask } from "./actions/survive";
 import { setupAutoCombat } from "./actions/combat";
+import { setupPositionRepair } from "./actions/position";
 
 const main = () => {
     console.log("Bot is starting...");
@@ -32,6 +33,7 @@ const main = () => {
 
     bot.on("spawn", () => {
         console.log("Bot has spawned in the world!");
+        setupPositionRepair();
 
         bot.loadPlugin(autoEat);
         if (!bot.autoEat) {
