@@ -19,6 +19,10 @@ export class TaskController {
     }
 
     run(task: Task) {
+        if (this.currentTask?.name === task.name) {
+            return;
+        }
+
         if (!this.currentTask) {
             this.startTask(task);
             return;
