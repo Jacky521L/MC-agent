@@ -15,6 +15,7 @@ export type FillChestWithLogsPhase =
     | "idle"
     | "checking_chest"
     | "chopping_tree"
+    | "collecting_drops"
     | "returning_to_chest"
     | "depositing_logs"
     | "done"
@@ -27,12 +28,18 @@ type FillChestWithLogsState = {
     previousPhase: FillChestWithLogsPhase | null;
     chestPosition: Vec3;
     treesChopped: number;
+    logsCollected: number;
     logsDeposited: number;
     lastError: string | null;
 };
 
 const CHEST_IDLE_RANGE = 3;
 const PLAYER_CHEST_TARGET_RANGE = 64;
+const LOG_DROP_COLLECTION_RADIUS = 16;
+const LOG_DROP_PICKUP_RANGE = 1;
+const LOG_DROP_COLLECTION_PASSES = 12;
+const LOG_DROP_SETTLE_DELAY_MS = 350;
+const LOG_PICKUP_WAIT_MS = 450;
 
 const errorToMessage = (error: unknown) => {
     if (error instanceof Error) return error.message;
@@ -56,6 +63,8 @@ const moveNearChest = async (chestPosition: Vec3) => {
         CHEST_IDLE_RANGE,
     ));
 };
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export const isChestBlockName = (name?: string | null) => {
     return name === "chest" || name === "trapped_chest";
@@ -97,6 +106,27 @@ const getNextLogItem = (chest: ChestWindowLike) => {
         .find(isLogItem) as Item | null ?? null;
 };
 
+const getDroppedLogItem = (entity: Entity) => {
+    try {
+        const droppedItem = entity.getDroppedItem?.();
+        return isLogItem(droppedItem) ? droppedItem : null;
+    } catch {
+        return null;
+    }
+};
+
+const findNearestDroppedLog = (origin: Vec3, radius = LOG_DROP_COLLECTION_RADIUS) => {
+    return Object.values(bot.entities)
+        .filter((entity) => {
+            return Boolean(getDroppedLogItem(entity))
+                && entity.position.distanceTo(origin) <= radius;
+        })
+        .sort((a, b) => {
+            return a.position.distanceSquared(bot.entity.position)
+                - b.position.distanceSquared(bot.entity.position);
+        })[0] ?? null;
+};
+
 export class FillChestWithLogsTask implements Task {
     readonly name = "fill_chest_with_logs";
     readonly priority = 40;
@@ -111,6 +141,7 @@ export class FillChestWithLogsTask implements Task {
             previousPhase: null,
             chestPosition: chestPosition.clone(),
             treesChopped: 0,
+            logsCollected: 0,
             logsDeposited: 0,
             lastError: null,
         };
@@ -181,6 +212,7 @@ export class FillChestWithLogsTask implements Task {
                 z: this.state.chestPosition.z,
             },
             treesChopped: this.state.treesChopped,
+            logsCollected: this.state.logsCollected,
             logsDeposited: this.state.logsDeposited,
             currentChopState: this.currentChopTask?.getState() ?? null,
             lastError: this.state.lastError,
@@ -197,6 +229,11 @@ export class FillChestWithLogsTask implements Task {
 
                 if (this.state.phase === "chopping_tree") {
                     await this.chopOneTree();
+                    continue;
+                }
+
+                if (this.state.phase === "collecting_drops") {
+                    await this.collectDroppedLogs();
                     continue;
                 }
 
@@ -271,6 +308,53 @@ export class FillChestWithLogsTask implements Task {
         }
 
         this.state.treesChopped++;
+        this.state.phase = "collecting_drops";
+    }
+
+    private async collectDroppedLogs() {
+        ensurePathfinder();
+        const movements = new Movements(bot);
+        movements.canDig = true;
+        bot.pathfinder.setMovements(movements);
+
+        await wait(LOG_DROP_SETTLE_DELAY_MS);
+        const collectionOrigin = bot.entity.position.clone();
+        let collectedThisPass = 0;
+
+        for (let pass = 0; pass < LOG_DROP_COLLECTION_PASSES && this.shouldKeepRunning(); pass++) {
+            const droppedLog = findNearestDroppedLog(collectionOrigin);
+            if (!droppedLog) break;
+
+            const item = getDroppedLogItem(droppedLog);
+            if (!item) continue;
+
+            const countBefore = this.countInventoryLogs();
+            try {
+                await bot.pathfinder.goto(new goals.GoalNear(
+                    droppedLog.position.x,
+                    droppedLog.position.y,
+                    droppedLog.position.z,
+                    LOG_DROP_PICKUP_RANGE,
+                ));
+                await wait(LOG_PICKUP_WAIT_MS);
+            } catch (error) {
+                if (!this.shouldKeepRunning()) return;
+                console.log(`Failed to move to dropped ${item.name}:`, error);
+            }
+
+            const collectedCount = Math.max(0, this.countInventoryLogs() - countBefore);
+            if (collectedCount > 0) {
+                collectedThisPass += collectedCount;
+                this.state.logsCollected += collectedCount;
+                console.log(`Picked up ${collectedCount} dropped log item(s).`);
+            }
+        }
+
+        if (collectedThisPass === 0) {
+            console.log("No dropped logs found to pick up.");
+        }
+
+        if (!this.shouldKeepRunning()) return;
         this.state.phase = "returning_to_chest";
     }
 
@@ -313,6 +397,12 @@ export class FillChestWithLogsTask implements Task {
         } finally {
             chest.close();
         }
+    }
+
+    private countInventoryLogs() {
+        return bot.inventory.items()
+            .filter(isLogItem)
+            .reduce((total, item) => total + item.count, 0);
     }
 
     private async finishNearChest() {
