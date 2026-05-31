@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "tsx src/actions/tree.test.ts && tsx src/actions/combat.test.ts && tsx src/actions/position.test.ts",
+    "test": "tsx src/actions/tree.test.ts && tsx src/actions/combat.test.ts && tsx src/actions/position.test.ts && tsx src/actions/taskController.test.ts",
     "dev:viewer": "tsx src/dev_viewer.ts"
   },
   "dependencies": {

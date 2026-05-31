@@ -11,7 +11,7 @@ export interface Task {
 export class TaskController {
     private taskQueue: Task[] = [];
     private currentTask: Task | null = null;
-    private pausedTask: Task | null = null;
+    private pausedTasks: Task[] = [];
 
     addTask(task: Task) {
         this.taskQueue.push(task);
@@ -19,7 +19,7 @@ export class TaskController {
     }
 
     run(task: Task) {
-        if (this.currentTask?.name === task.name) {
+        if (this.hasTaskNamed(task.name)) {
             return;
         }
 
@@ -30,13 +30,12 @@ export class TaskController {
 
         if (task.priority > this.currentTask.priority) {
             this.currentTask.pause();
-            this.pausedTask = this.currentTask;
+            this.pausedTasks.push(this.currentTask);
             this.startTask(task);
             return;
         }
 
-        this.currentTask.cancel();
-        this.startTask(task);
+        this.addTask(task);
     }
 
     private async startTask(task: Task) {
@@ -57,11 +56,15 @@ export class TaskController {
         }
         this.currentTask = null;
 
-        if (this.pausedTask) {
-            const taskToResume = this.pausedTask;
-            this.pausedTask = null;
+        const taskToResume = this.pausedTasks.pop();
+        if (taskToResume) {
             this.resumeTask(taskToResume);
             return;
+        }
+
+        const nextTask = this.taskQueue.shift();
+        if (nextTask) {
+            this.startTask(nextTask);
         }
     }
 
@@ -75,5 +78,11 @@ export class TaskController {
             .finally(() => {
                 this.onTaskFinished(task)
             });
-    }       
+    }
+
+    private hasTaskNamed(name: string) {
+        return this.currentTask?.name === name
+            || this.pausedTasks.some((task) => task.name === name)
+            || this.taskQueue.some((task) => task.name === name);
+    }
 }
