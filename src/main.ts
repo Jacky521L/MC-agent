@@ -1,14 +1,63 @@
 import bot from "./bot";
-import { chopTree, findNearestTree, getAllTreeBlocks } from "./actions/logging";
+import { ChopTreeTask, findNearestTree, getAllTreeBlocks } from "./actions/logging";
 import { followPlayer, stopFollowing } from "./follow_player";
+import { loader as autoEat } from 'mineflayer-auto-eat'
+import { TaskController } from "./actions/taskController";
+import { EatTask } from "./actions/survive";
 
 const main = () => {
     console.log("Bot is starting...");
+
+    const taskController = new TaskController();
+    const shouldEat = () => {
+        if (!bot.autoEat || bot.autoEat.isEating) return false;
+        if (bot.food >= 20) return false;
+
+        return bot.food < bot.autoEat.opts.minHunger || bot.health < bot.autoEat.opts.minHealth;
+    };
+    const tryRunEatTask = (source: string) => {
+        if (!shouldEat()) return;
+
+        console.log(`Eat task requested by ${source}:`, {
+            health: bot.health,
+            food: bot.food,
+            minHealth: bot.autoEat.opts.minHealth,
+            minHunger: bot.autoEat.opts.minHunger,
+            isEating: bot.autoEat.isEating,
+        });
+        taskController.run(new EatTask());
+    };
+
     bot.on("spawn", () => {
         console.log("Bot has spawned in the world!");
+
+        bot.loadPlugin(autoEat);
+        if (!bot.autoEat) {
+            console.log("Failed to load autoEat plugin.");
+            return;
+        }
+
+        bot.autoEat.setOpts({
+            minHunger: 15,
+            minHealth: 14,
+        });
+
+        bot.on("physicsTick", () => tryRunEatTask("physicsTick"));
     });
-    
-    
+
+    bot.on("entityHurt", (entity) => {
+        if (entity === bot.entity) {
+            console.log("bot hurt:", {
+                health: bot.health,
+                food: bot.food,
+                autoEatEnabled: bot.autoEat?.enabled,
+                isEating: bot.autoEat?.isEating,
+                items: bot.inventory.items().map(item => item.name),
+            })
+            tryRunEatTask("entityHurt");
+        }
+    });
+
     bot.on('chat', async (username, message) => {
         if (username === "Bot") return;
 
@@ -29,7 +78,7 @@ const main = () => {
                 getAllTreeBlocks(tree);
             }
         } else if (message === "chop tree") {
-            chopTree().catch((error) => console.log("Failed to chop tree:", error));
+            taskController.run(new ChopTreeTask());
         }
     });
 }
