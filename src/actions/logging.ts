@@ -5,6 +5,7 @@ import Denque from 'denque';
 import { pathfinder, goals, Movements } from 'mineflayer-pathfinder';
 import { plugin as tool } from 'mineflayer-tool';
 import { DIG_REACH, LEGACY_TREE_LOG_IDS, isTreeLogBlock, isWithinDigReach, keyOf, sortLogsForChopping } from "./tree";
+import { Task } from "./taskController";
 
 export type ChopTreePhase =
     | "idle"
@@ -234,7 +235,7 @@ const createInitialChopTreeState = (): ChopTreeState => ({
     lastError: null,
 });
 
-export class ChopTreeTask {
+export class ChopTreeTask implements Task {
     readonly name = "chop_tree";
     readonly priority = 50;
 
