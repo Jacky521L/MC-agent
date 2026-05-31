@@ -4,11 +4,13 @@ import { followPlayer, stopFollowing } from "./follow_player";
 import { loader as autoEat } from 'mineflayer-auto-eat'
 import { TaskController } from "./actions/taskController";
 import { EatTask } from "./actions/survive";
+import { setupAutoCombat } from "./actions/combat";
 
 const main = () => {
     console.log("Bot is starting...");
 
     const taskController = new TaskController();
+    setupAutoCombat(taskController);
     const shouldEat = () => {
         if (!bot.autoEat || bot.autoEat.isEating) return false;
         if (bot.food >= 20) return false;

@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "tsx src/actions/tree.test.ts",
+    "test": "tsx src/actions/tree.test.ts && tsx src/actions/combat.test.ts",
     "dev:viewer": "tsx src/dev_viewer.ts"
   },
   "dependencies": {
@@ -9,6 +9,7 @@
     "mineflayer": "^4.37.0",
     "mineflayer-auto-eat": "^5.0.3",
     "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-pvp": "^1.3.2",
     "mineflayer-tool": "^1.2.0",
     "prismarine-viewer": "^1.33.0"
   },
