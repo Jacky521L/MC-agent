@@ -3,8 +3,60 @@ import { FindBlockOptions } from "mineflayer";
 import { Vec3 } from 'vec3'
 import Denque from 'denque';
 import { pathfinder, goals, Movements } from 'mineflayer-pathfinder';
+import { plugin as tool } from 'mineflayer-tool';
 import { DIG_REACH, LEGACY_TREE_LOG_IDS, isTreeLogBlock, isWithinDigReach, keyOf, sortLogsForChopping } from "./tree";
 
+export type ChopTreePhase =
+    | "idle"
+    | "finding_tree"
+    | "moving_to_tree"
+    | "chopping_logs"
+    | "clearing_blocks"
+    | "done"
+    | "failed"
+    | "paused"
+    | "cancelled";
+
+type SerializableVec3 = {
+    x: number;
+    y: number;
+    z: number;
+};
+
+export type ChopTreeStateSnapshot = {
+    phase: ChopTreePhase;
+    previousPhase: ChopTreePhase | null;
+    startBlock: SerializableVec3 | null;
+    logsToChop: SerializableVec3[];
+    nextLogIndex: number;
+    placedBlocks: SerializableVec3[];
+    choppedCount: number;
+    failedLogs: SerializableVec3[];
+    lastError: string | null;
+};
+
+type ChopTreeState = {
+    phase: ChopTreePhase;
+    previousPhase: ChopTreePhase | null;
+    startBlock: Vec3 | null;
+    logsToChop: Vec3[];
+    nextLogIndex: number;
+    placedBlocks: Vec3[];
+    choppedCount: number;
+    failedLogs: Vec3[];
+    lastError: string | null;
+};
+
+const vec3ToSnapshot = (pos: Vec3): SerializableVec3 => ({
+    x: pos.x,
+    y: pos.y,
+    z: pos.z,
+});
+
+const errorToMessage = (error: unknown) => {
+    if (error instanceof Error) return error.message;
+    return String(error);
+};
 
 export const findNearestTree = (shouldMoveNearTree = true) => {
     const options: FindBlockOptions = {
@@ -133,6 +185,9 @@ const digReachableLog = async (pos: Vec3) => {
     let block = bot.blockAt(pos);
     if (!isTreeLogBlock(block)) return false;
 
+    bot.loadPlugin(tool);
+    await bot.tool.equipForBlock(block, {});
+
     if (!isWithinDigReach(bot.entity.position, pos) || !bot.canDigBlock(block)) {
         await moveToReachBlock(pos);
         block = bot.blockAt(pos);
@@ -147,6 +202,7 @@ const digReachableLog = async (pos: Vec3) => {
         console.log(`Retrying dig after moving: ${pos.x}, ${pos.y}, ${pos.z}`);
         block = bot.blockAt(pos);
         if (!isTreeLogBlock(block)) return false;
+        await bot.tool.equipForBlock(block, {});
         await bot.dig(block, false, 'raycast');
         return true;
     }
@@ -166,50 +222,264 @@ const clearBlocks = async (blocks: Vec3[]) => {
     }
 };
 
+const createInitialChopTreeState = (): ChopTreeState => ({
+    phase: "idle",
+    previousPhase: null,
+    startBlock: null,
+    logsToChop: [],
+    nextLogIndex: 0,
+    placedBlocks: [],
+    choppedCount: 0,
+    failedLogs: [],
+    lastError: null,
+});
 
-export const chopTree = async (treeBlock?: Vec3) => {
-    let numPlacedBlocks = 0;
-    let botPlacedBlocks: Vec3[] = [];
+export class ChopTreeTask {
+    readonly name = "chop_tree";
+    readonly priority = 50;
 
-    bot.on('blockUpdate', (oldBlock, newBlock) => {
-        if (oldBlock.name === "air" && newBlock.name !== "air") {
+    private state: ChopTreeState = createInitialChopTreeState();
+    private blockUpdateListener: ((oldBlock: any, newBlock: any) => void) | null = null;
+    private runningPromise: Promise<number> | null = null;
+
+    constructor(private readonly treeBlock?: Vec3) {}
+
+    async start() {
+        if (this.state.phase === "cancelled") {
+            console.log("Cannot start a cancelled chop tree task.");
+            return this.state.choppedCount;
+        }
+
+        if (this.runningPromise) {
+            return this.runningPromise;
+        }
+
+        if (this.state.phase === "idle") {
+            this.state.phase = "finding_tree";
+            this.state.startBlock = this.treeBlock ?? null;
+        }
+
+        this.runningPromise = this.run().finally(() => {
+            this.runningPromise = null;
+        });
+        return this.runningPromise;
+    }
+
+    async pause() {
+        if (!this.canPause()) return;
+
+        this.state.previousPhase = this.state.phase;
+        this.state.phase = "paused";
+        this.stopCurrentBotAction();
+        console.log("Chop tree task paused.");
+    }
+
+    async resume() {
+        if (this.state.phase === "cancelled") {
+            console.log("Cannot resume a cancelled chop tree task.");
+            return this.state.choppedCount;
+        }
+
+        if (this.state.phase !== "paused") {
+            return this.start();
+        }
+
+        this.state.phase = this.state.previousPhase ?? "chopping_logs";
+        this.state.previousPhase = null;
+        console.log("Chop tree task resumed.");
+        return this.start();
+    }
+
+    async cancel() {
+        this.state.phase = "cancelled";
+        this.state.previousPhase = null;
+        this.stopCurrentBotAction();
+        this.stopTrackingPlacedBlocks();
+        console.log("Chop tree task cancelled.");
+    }
+
+    getState(): ChopTreeStateSnapshot {
+        return {
+            phase: this.state.phase,
+            previousPhase: this.state.previousPhase,
+            startBlock: this.state.startBlock ? vec3ToSnapshot(this.state.startBlock) : null,
+            logsToChop: this.state.logsToChop.map(vec3ToSnapshot),
+            nextLogIndex: this.state.nextLogIndex,
+            placedBlocks: this.state.placedBlocks.map(vec3ToSnapshot),
+            choppedCount: this.state.choppedCount,
+            failedLogs: this.state.failedLogs.map(vec3ToSnapshot),
+            lastError: this.state.lastError,
+        };
+    }
+
+    private async run() {
+        this.startTrackingPlacedBlocks();
+
+        try {
+            while (this.shouldKeepRunning()) {
+                if (this.state.phase === "finding_tree") {
+                    this.prepareTree();
+                    continue;
+                }
+
+                if (this.state.phase === "moving_to_tree") {
+                    await this.moveToTree();
+                    continue;
+                }
+
+                if (this.state.phase === "chopping_logs") {
+                    await this.chopNextLog();
+                    continue;
+                }
+
+                if (this.state.phase === "clearing_blocks") {
+                    await this.clearPlacedBlocks();
+                    continue;
+                }
+
+                break;
+            }
+        } catch (error) {
+            if (this.state.phase !== "paused" && this.state.phase !== "cancelled") {
+                this.state.phase = "failed";
+            }
+            this.state.lastError = errorToMessage(error);
+            console.log("Chop tree task failed:", error);
+        } finally {
+            if (this.state.phase === "done" || this.state.phase === "failed" || this.state.phase === "cancelled") {
+                this.stopTrackingPlacedBlocks();
+            }
+        }
+
+        return this.state.choppedCount;
+    }
+
+    private prepareTree() {
+        const startBlock = this.state.startBlock ?? findNearestTree(false);
+        if (!startBlock) {
+            console.log("No tree found to chop.");
+            this.state.phase = "done";
+            return;
+        }
+
+        this.state.startBlock = startBlock;
+        const treeBlocks = getAllTreeBlocks(startBlock);
+        this.state.logsToChop = sortLogsForChopping(startBlock, treeBlocks);
+        this.state.nextLogIndex = 0;
+        this.state.choppedCount = 0;
+        this.state.failedLogs = [];
+        this.state.lastError = null;
+
+        console.log(`Chopping ${this.state.logsToChop.length} log blocks.`);
+        this.state.phase = this.state.logsToChop.length > 0 ? "moving_to_tree" : "done";
+    }
+
+    private async moveToTree() {
+        if (!this.state.startBlock) {
+            this.state.phase = "finding_tree";
+            return;
+        }
+
+        setTreeChoppingMovements();
+        await moveNearBlock(this.state.startBlock);
+
+        if (this.state.phase !== "paused" && this.state.phase !== "cancelled") {
+            this.state.phase = "chopping_logs";
+        }
+    }
+
+    private async chopNextLog() {
+        if (this.state.nextLogIndex >= this.state.logsToChop.length) {
+            this.state.phase = "clearing_blocks";
+            return;
+        }
+
+        const logPos = this.state.logsToChop[this.state.nextLogIndex];
+        let shouldAdvanceLogIndex = false;
+        try {
+            const didChop = await digReachableLog(logPos);
+            if (this.state.phase === "paused" || this.state.phase === "cancelled") return;
+
+            shouldAdvanceLogIndex = true;
+            if (didChop) {
+                this.state.choppedCount++;
+                console.log(`Chopped log at ${logPos.x}, ${logPos.y}, ${logPos.z}.`);
+            } else {
+                this.state.failedLogs.push(logPos);
+                console.log(`Skipped missing or unreachable log at ${logPos.x}, ${logPos.y}, ${logPos.z}.`);
+            }
+        } catch (error) {
+            if (this.state.phase === "paused" || this.state.phase === "cancelled") return;
+
+            shouldAdvanceLogIndex = true;
+            this.state.failedLogs.push(logPos);
+            this.state.lastError = errorToMessage(error);
+            console.log(`Failed to chop log at ${logPos.x}, ${logPos.y}, ${logPos.z}:`, error);
+        } finally {
+            if (shouldAdvanceLogIndex) {
+                this.state.nextLogIndex++;
+            }
+        }
+    }
+
+    private async clearPlacedBlocks() {
+        await clearBlocks(this.state.placedBlocks);
+        console.log(`Cleared ${this.state.placedBlocks.length} blocks placed by the bot during chopping.`);
+        console.log(`Finished chopping tree. Chopped ${this.state.choppedCount}/${this.state.logsToChop.length} blocks.`);
+        this.state.phase = "done";
+    }
+
+    private startTrackingPlacedBlocks() {
+        if (this.blockUpdateListener) return;
+
+        this.blockUpdateListener = (oldBlock, newBlock) => {
+            if (this.state.phase === "paused" || this.state.phase === "cancelled") return;
+            if (oldBlock.name !== "air" || newBlock.name === "air") return;
 
             const dist = bot.entity.position.distanceTo(newBlock.position);
             if (dist < 5) {
-                numPlacedBlocks++;
-                botPlacedBlocks.unshift(newBlock.position);
-                console.log(`bot placed ${numPlacedBlocks} block.`);
+                this.state.placedBlocks.unshift(newBlock.position);
+                console.log(`bot placed ${this.state.placedBlocks.length} block.`);
             }
-        }
-    });
-    const startBlock = treeBlock ?? findNearestTree(false);
-    if (!startBlock) {
-        console.log("No tree found to chop.");
-        return 0;
+        };
+        bot.on('blockUpdate', this.blockUpdateListener);
     }
 
-    const treeBlocks = getAllTreeBlocks(startBlock);
-    const logsToChop = sortLogsForChopping(startBlock, treeBlocks);
+    private stopTrackingPlacedBlocks() {
+        if (!this.blockUpdateListener) return;
 
-    console.log(`Chopping ${logsToChop.length} log blocks.`);
-    setTreeChoppingMovements();
-    await moveNearBlock(startBlock);
-
-    let choppedCount = 0;
-    for (const logPos of logsToChop) {
-        try {
-            if (await digReachableLog(logPos)) {
-                choppedCount++;
-                console.log(`Chopped log at ${logPos.x}, ${logPos.y}, ${logPos.z}.`);
-            }
-        } catch (error) {
-            console.log(`Failed to chop log at ${logPos.x}, ${logPos.y}, ${logPos.z}:`, error);
-        }
+        bot.removeListener('blockUpdate', this.blockUpdateListener);
+        this.blockUpdateListener = null;
     }
 
-    console.log(`Finished chopping tree. Chopped ${choppedCount}/${logsToChop.length} blocks.`);
+    private canPause() {
+        return this.state.phase !== "idle"
+            && this.state.phase !== "paused"
+            && this.state.phase !== "done"
+            && this.state.phase !== "failed"
+            && this.state.phase !== "cancelled";
+    }
 
-    await clearBlocks(botPlacedBlocks);
-    console.log(`Cleared ${botPlacedBlocks.length} blocks placed by the bot during chopping.`);
-    return choppedCount;
+    private shouldKeepRunning() {
+        return this.state.phase !== "paused"
+            && this.state.phase !== "cancelled"
+            && this.state.phase !== "done"
+            && this.state.phase !== "failed";
+    }
+
+    private stopCurrentBotAction() {
+        if (bot.pathfinder) {
+            bot.pathfinder.setGoal(null);
+        }
+
+        const digger = bot as typeof bot & { stopDigging?: () => void };
+        if (typeof digger.stopDigging === "function") {
+            digger.stopDigging();
+        }
+    }
+}
+
+export const chopTree = async (treeBlock?: Vec3) => {
+    const task = new ChopTreeTask(treeBlock);
+    return task.start();
 };
