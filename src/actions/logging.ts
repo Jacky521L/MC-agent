@@ -12,7 +12,6 @@ export type ChopTreePhase =
     | "finding_tree"
     | "moving_to_tree"
     | "chopping_logs"
-    | "clearing_blocks"
     | "done"
     | "failed"
     | "paused"
@@ -30,7 +29,6 @@ export type ChopTreeStateSnapshot = {
     startBlock: SerializableVec3 | null;
     logsToChop: SerializableVec3[];
     nextLogIndex: number;
-    placedBlocks: SerializableVec3[];
     choppedCount: number;
     failedLogs: SerializableVec3[];
     lastError: string | null;
@@ -42,7 +40,6 @@ type ChopTreeState = {
     startBlock: Vec3 | null;
     logsToChop: Vec3[];
     nextLogIndex: number;
-    placedBlocks: Vec3[];
     choppedCount: number;
     failedLogs: Vec3[];
     lastError: string | null;
@@ -59,20 +56,39 @@ const errorToMessage = (error: unknown) => {
     return String(error);
 };
 
+const MAX_TREE_START_HEIGHT_ABOVE_BOT = 5;
+
+const distanceSquaredToBot = (pos: Vec3) => {
+    return pos.distanceSquared(bot.entity.position);
+};
+
+const chooseTreeStart = (trees: Vec3[]) => {
+    const maxStartY = Math.floor(bot.entity.position.y) + MAX_TREE_START_HEIGHT_ABOVE_BOT;
+    const reachableStarts = trees.filter((tree) => tree.y <= maxStartY);
+
+    reachableStarts.sort((a, b) => {
+        if (a.y !== b.y) return a.y - b.y;
+        return distanceSquaredToBot(a) - distanceSquaredToBot(b);
+    });
+
+    return reachableStarts[0] ?? null;
+};
+
 export const findNearestTree = (shouldMoveNearTree = true) => {
     const options: FindBlockOptions = {
         matching: [...LEGACY_TREE_LOG_IDS],
         maxDistance: 16,
-        count: 5
+        count: 24
     };
 
     const tree = bot.findBlocks(options);
+    const treeStart = chooseTreeStart(tree);
     
-    if (tree.length > 0) {
+    if (treeStart) {
         console.log(tree);
         const botPos = bot.entity.position;
         console.log(`Bot is at position: ${botPos}`);
-        const { x, y, z } = tree[0];
+        const { x, y, z } = treeStart;
         if (shouldMoveNearTree) {
             moveNearBlock(new Vec3(x, y, z));
             console.log(`Found a tree at ${x}, ${y}, ${z} and moving towards it.`);
@@ -80,10 +96,10 @@ export const findNearestTree = (shouldMoveNearTree = true) => {
             console.log(`Found a tree at ${x}, ${y}, ${z}.`);
         }
     } else {
-        console.log("No trees found nearby.");
+        console.log("No reachable tree starts found nearby.");
     }
 
-    return tree[0];
+    return treeStart;
 }
 
 export const bfs = (pos: Vec3) => {
@@ -182,12 +198,17 @@ const moveToReachBlock = async (pos: Vec3) => {
     }
 };
 
+const digBlock = async (block: any) => {
+    await bot.tool.equipForBlock(block, {});
+    await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
+    await bot.dig(block, true, 'auto');
+};
+
 const digReachableLog = async (pos: Vec3) => {
     let block = bot.blockAt(pos);
     if (!isTreeLogBlock(block)) return false;
 
     bot.loadPlugin(tool);
-    await bot.tool.equipForBlock(block, {});
 
     if (!isWithinDigReach(bot.entity.position, pos) || !bot.canDigBlock(block)) {
         await moveToReachBlock(pos);
@@ -196,30 +217,15 @@ const digReachableLog = async (pos: Vec3) => {
     }
 
     try {
-        await bot.dig(block, false, 'raycast');
+        await digBlock(block);
         return true;
     } catch (error) {
         await moveToReachBlock(pos);
         console.log(`Retrying dig after moving: ${pos.x}, ${pos.y}, ${pos.z}`);
         block = bot.blockAt(pos);
         if (!isTreeLogBlock(block)) return false;
-        await bot.tool.equipForBlock(block, {});
-        await bot.dig(block, false, 'raycast');
+        await digBlock(block);
         return true;
-    }
-};
-
-const clearBlocks = async (blocks: Vec3[]) => {
-    for (const blockPos of blocks) {
-        const block = bot.blockAt(blockPos);
-        if (block && block.name !== "air") {
-            try {
-                await bot.dig(block, false, 'raycast');
-                console.log(`Cleared block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}.`);
-            } catch (error) {
-                console.log(`Failed to clear block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}:`, error);
-            }
-        }
     }
 };
 
@@ -229,7 +235,6 @@ const createInitialChopTreeState = (): ChopTreeState => ({
     startBlock: null,
     logsToChop: [],
     nextLogIndex: 0,
-    placedBlocks: [],
     choppedCount: 0,
     failedLogs: [],
     lastError: null,
@@ -240,7 +245,6 @@ export class ChopTreeTask implements Task {
     readonly priority = 50;
 
     private state: ChopTreeState = createInitialChopTreeState();
-    private blockUpdateListener: ((oldBlock: any, newBlock: any) => void) | null = null;
     private runningPromise: Promise<number> | null = null;
 
     constructor(private readonly treeBlock?: Vec3) {}
@@ -295,7 +299,6 @@ export class ChopTreeTask implements Task {
         this.state.phase = "cancelled";
         this.state.previousPhase = null;
         this.stopCurrentBotAction();
-        this.stopTrackingPlacedBlocks();
         console.log("Chop tree task cancelled.");
     }
 
@@ -306,7 +309,6 @@ export class ChopTreeTask implements Task {
             startBlock: this.state.startBlock ? vec3ToSnapshot(this.state.startBlock) : null,
             logsToChop: this.state.logsToChop.map(vec3ToSnapshot),
             nextLogIndex: this.state.nextLogIndex,
-            placedBlocks: this.state.placedBlocks.map(vec3ToSnapshot),
             choppedCount: this.state.choppedCount,
             failedLogs: this.state.failedLogs.map(vec3ToSnapshot),
             lastError: this.state.lastError,
@@ -314,8 +316,6 @@ export class ChopTreeTask implements Task {
     }
 
     private async run() {
-        this.startTrackingPlacedBlocks();
-
         try {
             while (this.shouldKeepRunning()) {
                 if (this.state.phase === "finding_tree") {
@@ -333,11 +333,6 @@ export class ChopTreeTask implements Task {
                     continue;
                 }
 
-                if (this.state.phase === "clearing_blocks") {
-                    await this.clearPlacedBlocks();
-                    continue;
-                }
-
                 break;
             }
         } catch (error) {
@@ -349,10 +344,6 @@ export class ChopTreeTask implements Task {
 
             this.state.phase = "failed";
             console.log("Chop tree task failed:", error);
-        } finally {
-            if (this.state.phase === "done" || this.state.phase === "failed" || this.state.phase === "cancelled") {
-                this.stopTrackingPlacedBlocks();
-            }
         }
 
         return this.state.choppedCount;
@@ -366,9 +357,9 @@ export class ChopTreeTask implements Task {
             return;
         }
 
-        this.state.startBlock = startBlock;
         const treeBlocks = getAllTreeBlocks(startBlock);
         this.state.logsToChop = sortLogsForChopping(startBlock, treeBlocks);
+        this.state.startBlock = this.state.logsToChop[0] ?? startBlock;
         this.state.nextLogIndex = 0;
         this.state.choppedCount = 0;
         this.state.failedLogs = [];
@@ -394,7 +385,8 @@ export class ChopTreeTask implements Task {
 
     private async chopNextLog() {
         if (this.state.nextLogIndex >= this.state.logsToChop.length) {
-            this.state.phase = "clearing_blocks";
+            console.log(`Finished chopping tree. Chopped ${this.state.choppedCount}/${this.state.logsToChop.length} blocks.`);
+            this.state.phase = "done";
             return;
         }
 
@@ -424,36 +416,6 @@ export class ChopTreeTask implements Task {
                 this.state.nextLogIndex++;
             }
         }
-    }
-
-    private async clearPlacedBlocks() {
-        await clearBlocks(this.state.placedBlocks);
-        console.log(`Cleared ${this.state.placedBlocks.length} blocks placed by the bot during chopping.`);
-        console.log(`Finished chopping tree. Chopped ${this.state.choppedCount}/${this.state.logsToChop.length} blocks.`);
-        this.state.phase = "done";
-    }
-
-    private startTrackingPlacedBlocks() {
-        if (this.blockUpdateListener) return;
-
-        this.blockUpdateListener = (oldBlock, newBlock) => {
-            if (this.state.phase === "paused" || this.state.phase === "cancelled") return;
-            if (oldBlock.name !== "air" || newBlock.name === "air") return;
-
-            const dist = bot.entity.position.distanceTo(newBlock.position);
-            if (dist < 5) {
-                this.state.placedBlocks.unshift(newBlock.position);
-                console.log(`bot placed ${this.state.placedBlocks.length} block.`);
-            }
-        };
-        bot.on('blockUpdate', this.blockUpdateListener);
-    }
-
-    private stopTrackingPlacedBlocks() {
-        if (!this.blockUpdateListener) return;
-
-        bot.removeListener('blockUpdate', this.blockUpdateListener);
-        this.blockUpdateListener = null;
     }
 
     private canPause() {
