@@ -29,9 +29,16 @@ export class TaskController {
         }
 
         if (task.priority > this.currentTask.priority) {
-            this.currentTask.pause();
-            this.pausedTasks.push(this.currentTask);
-            this.startTask(task);
+            const pausedTask = this.currentTask;
+            this.pausedTasks.push(pausedTask);
+            this.currentTask = null;
+            Promise.resolve(pausedTask.pause())
+                .catch((error) => {
+                    console.log(`Task ${pausedTask.name} failed during pause:`, error);
+                })
+                .finally(() => {
+                    this.startTask(task);
+                });
             return;
         }
 

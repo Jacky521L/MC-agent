@@ -341,10 +341,13 @@ export class ChopTreeTask implements Task {
                 break;
             }
         } catch (error) {
-            if (this.state.phase !== "paused" && this.state.phase !== "cancelled") {
-                this.state.phase = "failed";
-            }
             this.state.lastError = errorToMessage(error);
+
+            if (this.state.phase === "paused" || this.state.phase === "cancelled") {
+                return this.state.choppedCount;
+            }
+
+            this.state.phase = "failed";
             console.log("Chop tree task failed:", error);
         } finally {
             if (this.state.phase === "done" || this.state.phase === "failed" || this.state.phase === "cancelled") {

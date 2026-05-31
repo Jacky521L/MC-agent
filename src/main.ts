@@ -1,11 +1,12 @@
 import bot from "./bot";
-import { ChopTreeTask, findNearestTree, getAllTreeBlocks } from "./actions/logging";
+import { findNearestTree, getAllTreeBlocks } from "./actions/logging";
 import { followPlayer, stopFollowing } from "./follow_player";
 import { loader as autoEat } from 'mineflayer-auto-eat'
 import { TaskController } from "./actions/taskController";
 import { EatTask } from "./actions/survive";
 import { setupAutoCombat } from "./actions/combat";
 import { setupPositionRepair } from "./actions/position";
+import { createFillChestWithLogsTaskFromPlayerView } from "./actions/fillChestWithLogs";
 
 const main = () => {
     console.log("Bot is starting...");
@@ -83,7 +84,19 @@ const main = () => {
                 getAllTreeBlocks(tree);
             }
         } else if (message === "chop tree") {
-            taskController.run(new ChopTreeTask());
+            const player = bot.players[username];
+            if (!player?.entity) {
+                console.log(`Player ${username} not found.`);
+                return;
+            }
+
+            const fillChestTask = createFillChestWithLogsTaskFromPlayerView(player.entity);
+            if (!fillChestTask) {
+                bot.chat("Look at a chest before asking me to chop tree.");
+                return;
+            }
+
+            taskController.run(fillChestTask);
         }
     });
 }
