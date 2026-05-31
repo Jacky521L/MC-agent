@@ -12,6 +12,8 @@ const main = () => {
 
     const taskController = new TaskController();
     setupAutoCombat(taskController);
+    setupPositionRepair();
+
     const shouldEat = () => {
         if (!bot.autoEat || bot.autoEat.isEating) return false;
         if (bot.food >= 20) return false;
@@ -33,7 +35,6 @@ const main = () => {
 
     bot.on("spawn", () => {
         console.log("Bot has spawned in the world!");
-        setupPositionRepair();
 
         bot.loadPlugin(autoEat);
         if (!bot.autoEat) {
