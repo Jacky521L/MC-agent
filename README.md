@@ -2,7 +2,6 @@
 
 A Mineflayer-based Minecraft bot that can chop trees into a player-selected chest, collect dropped logs, follow the player, eat when needed, fight nearby hostile mobs, and repair invalid movement state caused by server/client physics glitches.
 
-[Demo video](https://youtu.be/mFIOwD34vzo)
 
 ## System Design Diagram
 
